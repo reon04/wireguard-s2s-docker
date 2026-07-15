@@ -1,0 +1,22 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# CI
+.github
+.codeclimate.yml
+.travis.yml
+.taskcluster.yml
+
+# Docker
+docker-compose.yml
+Dockerfile
+.docker
+.dockerignore
+
+# Vim swap files
+**/*.swp
+
+# VS Code
+.vscode/
