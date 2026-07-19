@@ -1,4 +1,5 @@
 # wireguard-s2s-docker
+[![Publish Release and Build Docker](https://github.com/reon04/wireguard-s2s-docker/actions/workflows/release.yml/badge.svg)](https://github.com/reon04/wireguard-s2s-docker/actions/workflows/release.yml)
 
 A minimal Docker image for running WireGuard. Supports key generation, environment variable–based configuration and multiple peers.
 
