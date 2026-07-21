@@ -165,12 +165,36 @@ echo "[INFO] WireGuard configuration written to '$CONFIG'."
 chmod 600 "$CONFIG"
 
 cleanup() {
-    echo "[INFO] Stopping WireGuard interface '$IFACE'..."
-    wg-quick down "$IFACE"
-    echo "[INFO] WireGuard interface '$IFACE' stopped."
+    local exit_code=$?
+
+    trap - EXIT SIGINT SIGTERM
+
+    if ip link show "$IFACE" >/dev/null 2>&1; then
+        echo "[INFO] Stopping WireGuard interface '$IFACE'..."
+
+        if wg-quick down "$IFACE"; then
+            echo "[INFO] WireGuard interface '$IFACE' stopped."
+        else
+            echo "[WARN] wg-quick could not remove '$IFACE'; removing it directly." >&2
+            ip link delete dev "$IFACE" || true
+        fi
+    else
+        echo "[INFO] WireGuard interface '$IFACE' is not active."
+    fi
+
+    exit "$exit_code"
 }
 
-trap cleanup SIGINT SIGTERM
+trap cleanup EXIT SIGINT SIGTERM
+
+if ip link show "$IFACE" >/dev/null 2>&1; then
+    echo "[WARN] Removing stale interface '$IFACE'..."
+
+    if ! wg-quick down "$IFACE"; then
+        echo "[WARN] wg-quick could not remove '$IFACE'; removing it directly." >&2
+        ip link delete dev "$IFACE" || true
+    fi
+fi
 
 echo "[INFO] Starting WireGuard interface '$IFACE'..."
 wg-quick up "$IFACE"
