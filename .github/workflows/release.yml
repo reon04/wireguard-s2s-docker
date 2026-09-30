@@ -1,48 +1,65 @@
-name: Publish Release and Build Docker
+name: Build Docker and Publish Release
 on:
   workflow_run:
     workflows: [Merge Dependabot Pullrequest]
     types:
       - completed
   push:
-    branches:
-      - main
+    tags:
+      - "*"
 jobs:
-  release:
+  validate:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.extract_version.outputs.version }}
-    permissions:
-      contents: write
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - name: Extract base image version
-        id: extract_version
+      - name: Determine build type
         run: |
-          BASE_IMAGE_VERSION=$(grep -i '^FROM ' Dockerfile | head -1 | cut -d ':' -f2- | cut -d '-' -f1)
-          echo "version=$BASE_IMAGE_VERSION" >> $GITHUB_OUTPUT
-      - name: Set up Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-      - name: Create GitHub Release
-        run: |
-          TAG_NAME=${{ steps.extract_version.outputs.version }}
-          if git show-ref --tags --verify --quiet "refs/tags/${TAG_NAME}"; then
-            git tag -d "$TAG_NAME"
-            git push origin -d "$TAG_NAME"
-            gh release delete "$TAG_NAME"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            BUILD_TYPE=manual
+          else
+            BUILD_TYPE=auto
           fi
-          git tag "$TAG_NAME"
-          git push origin "$TAG_NAME"
-          gh release create "$TAG_NAME" --title "$TAG_NAME"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  docker:
-    needs: release
+          echo "BUILD_TYPE=$BUILD_TYPE" >> "$GITHUB_ENV"
+      - name: Determine and validate version
+        id: version
+        run: |
+          FROM_LINE=$(head -n1 Dockerfile)
+          if ! echo "$FROM_LINE" | grep -q '^FROM'; then
+            echo "first line does not contain base image name and version, aborting..."
+            exit 1
+          fi
+          VERSION=$(echo "$FROM_LINE" | sed 's/.*\://; s/ .*//; s/\-.*//')
+          if [ -z "$VERSION" ]; then
+            echo "version number could not be extracted from first line, aborting..."
+            exit 1
+          fi
+          echo "extracted version tag from base image: $VERSION"          
+
+          case "$BUILD_TYPE" in
+            auto)
+              VERSION="$VERSION.0"
+              ;;
+            manual)
+              CI_COMMIT_TAG="${GITHUB_REF_NAME}"
+              if ! [[ "$CI_COMMIT_TAG" =~ ^${VERSION}\.[0-9]+$ ]]; then
+                echo "new version $CI_COMMIT_TAG does not match base image version $VERSION (expected $VERSION.<number>), aborting..."
+                exit 1
+              fi
+              VERSION="$CI_COMMIT_TAG"
+              ;;
+            *)
+              echo "no build type for pipeline specified, aborting..."
+              exit 1
+              ;;
+          esac
+          echo "verification of new version number $VERSION successful"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+  build:
+    needs:
+      - validate
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -64,7 +81,38 @@ jobs:
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}:${{ needs.release.outputs.version }}
+            ghcr.io/${{ github.repository }}:${{ needs.validate.outputs.version }}
             ghcr.io/${{ github.repository }}:latest
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
           cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache,mode=max
+  release:
+    needs:
+      - validate
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Set up Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Create GitHub Release
+        run: |
+          TAG_NAME=${{ needs.validate.outputs.version }}
+          if git show-ref --tags --verify --quiet "refs/tags/${TAG_NAME}"; then
+            git tag -d "$TAG_NAME"
+            git push origin -d "$TAG_NAME"
+          fi
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release delete "$TAG_NAME"
+          fi
+          git tag "$TAG_NAME"
+          git push origin "$TAG_NAME"
+          gh release create "$TAG_NAME" --title "$TAG_NAME" --notes "Release $TAG_NAME. Docker image ghcr.io/${{ github.repository }}:$TAG_NAME published."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
